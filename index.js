@@ -8,12 +8,13 @@ const app = express();
 const PORT = 3000;
 const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
+    serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+    }
 });
+
 // Function to chunk an array into smaller arrays
 function chunkArray(array, chunkSize) {
     const chunks = [];
@@ -22,10 +23,12 @@ function chunkArray(array, chunkSize) {
     }
     return chunks;
 }
+
 // Function to create a delay
 function delay(time) {
     return new Promise(resolve => setTimeout(resolve, time));
 }
+
 // Function to get new image links
 async function getNewImageLinks(page, divSelector) {
     await autoScroll(page, 100); // Ensure scrolling works
@@ -35,6 +38,7 @@ async function getNewImageLinks(page, divSelector) {
     }, divSelector);
     return newLinks;
 }
+
 // Auto-scroll function
 async function autoScroll(page, scrollDelay) {
     await page.evaluate(async (scrollDelay) => {
@@ -53,6 +57,7 @@ async function autoScroll(page, scrollDelay) {
         });
     }, scrollDelay);
 }
+
 // Function to add data to MongoDB
 async function addData(links) {
     try {
@@ -61,7 +66,6 @@ async function addData(links) {
         const collection = database.collection('waitforplot'); // Replace with your actual collection name
 
         for (const link of links) {
-            // const url = link.map() 
             const linkData = { link }; // Store the link in an object
             try {
                 const result = await collection.insertOne(linkData); // Insert each link
@@ -83,12 +87,12 @@ async function addData(links) {
 
 // Main scraping function
 async function continuousScrapeImageLinks(query, order, divSelector, ws) {
-    let browser;
-    try {
-        browser = await puppeteer.launch({ headless: true });
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1200, height: 800 });
+    let browser = await puppeteer.launch({ headless: true });
+    let page = await browser.newPage();
+    let scrapeCount = 0;
 
+    try {
+        await page.setViewport({ width: 1200, height: 800 });
         const searchUrl = `https://www.redgifs.com/niches/${query}?order=${order}`;
         console.log(`Searching for results from ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2' });
@@ -99,8 +103,10 @@ async function continuousScrapeImageLinks(query, order, divSelector, ws) {
         }
 
         while (true) {
+            // Scrape new image links
             const newLinks = await getNewImageLinks(page, divSelector);
             console.log('Extracted new links:', newLinks);
+
             if (newLinks.length > 0) {
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     const chunks = chunkArray(newLinks, 400);
@@ -115,7 +121,18 @@ async function continuousScrapeImageLinks(query, order, divSelector, ws) {
                 await addData(newLinks);
             }
 
-            await delay(5000); // Scrape new links every 5 seconds
+            // Restart browser every 100 scrapes to prevent memory issues
+            scrapeCount++;
+            if (scrapeCount >= 100) {
+                await browser.close();
+                browser = await puppeteer.launch({ headless: true });
+                page = await browser.newPage();
+                await page.setViewport({ width: 1200, height: 800 });
+                await page.goto(searchUrl, { waitUntil: 'networkidle2' });
+                scrapeCount = 0;
+            }
+
+            await delay(50); // Scrape new links every 5 seconds
         }
     } catch (error) {
         console.error('Error occurred during scraping:', error);
@@ -127,6 +144,7 @@ async function continuousScrapeImageLinks(query, order, divSelector, ws) {
 // WebSocket server for live link updates
 const wss = new WebSocket.Server({ port: 8080 });
 let currentScraping = null; // Track the current scraping instance
+
 wss.on('connection', (ws) => {
     console.log('Client connected');
 
@@ -134,36 +152,17 @@ wss.on('connection', (ws) => {
         const { query, order, divSelector } = JSON.parse(message);
         console.log('Received query:', query);
 
-        // Cancel the previous scraping if it's still running
         if (currentScraping) {
-            clearTimeout(currentScraping.timeoutId);
             currentScraping.browser.close();
         }
-        // Create a timeout for the scraping operation
-        const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => {
-                reject(new Error('Operation timed out'));
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ error: 'Operation timed out' }));
-                }
-            }, TIMEOUT_DURATION)
-        );
+
         try {
             currentScraping = {
                 browser: await puppeteer.launch({ headless: true }),
-                timeoutId: setTimeout(() => {
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ error: 'Operation timed out' }));
-                    }
-                }, TIMEOUT_DURATION),
             };
 
             const page = await currentScraping.browser.newPage();
             await continuousScrapeImageLinks(query, order, divSelector, ws);
-            await Promise.race([
-                continuousScrapeImageLinks(query, order, divSelector, ws),
-                timeoutPromise
-            ]);
         } catch (error) {
             console.error('Error during WebSocket scraping:', error.message);
         }
@@ -173,7 +172,7 @@ wss.on('connection', (ws) => {
         console.log('Client disconnected');
         if (currentScraping) {
             currentScraping.browser.close();
-            currentScraping = null; // Clear the current scraping instance
+            currentScraping = null;
         }
     });
 });
@@ -202,5 +201,6 @@ app.listen(PORT, () => {
         await client.close();
     }
 })();
+
 
 continuousScrapeImageLinks('watch-it-for-the-plot', 'top', '.previewFeed');
