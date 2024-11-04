@@ -5,19 +5,17 @@ const WebSocket = require('ws');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 require('dotenv').config();
 const app = express();
-const PORT = 3500;
+const PORT = 3000;
 const uri = process.env.MONGODB_URI;
 let dbname='';
 let collectionname='';
 let category='';
 
-function setDBdetails(db,collection,category){
+function setDBdeta(db,collection,category){
  dbname=db;
  collectionname=collection;
  category=category;
 }
-
-
 const client = new MongoClient(uri, {
     serverApi: {
         version: ServerApiVersion.v1,
@@ -25,6 +23,8 @@ const client = new MongoClient(uri, {
         deprecationErrors: true,
     }
 });
+
+// Function to chunk an array into smaller arrays
 function chunkArray(array, chunkSize) {
     const chunks = [];
     for (let i = 0; i < array.length; i += chunkSize) {
@@ -32,9 +32,13 @@ function chunkArray(array, chunkSize) {
     }
     return chunks;
 }
+
+// Function to create a delay
 function delay(time) {
     return new Promise(resolve => setTimeout(resolve, time));
 }
+
+// Function to get new image links
 async function getNewImageLinks(page, divSelector) {
     await autoScroll(page, 100); // Ensure scrolling works
     const newLinks = await page.evaluate((divSelector) => {
@@ -43,6 +47,8 @@ async function getNewImageLinks(page, divSelector) {
     }, divSelector);
     return newLinks;
 }
+
+// Auto-scroll function
 async function autoScroll(page, scrollDelay) {
     await page.evaluate(async (scrollDelay) => {
         await new Promise(resolve => {
@@ -60,11 +66,13 @@ async function autoScroll(page, scrollDelay) {
         });
     }, scrollDelay);
 }
+
+// Function to add data to MongoDB
 async function addData(links, category) { 
     try {
         await client.connect();
-        const database = client.db(dbname); // Replace with your actual database name
-        const collection = database.collection(collectionname); // Replace with your actual collection name
+        const database = client.db('askeladd'); // Replace with your actual database name
+        const collection = database.collection('mix'); // Replace with your actual collection name
         for (const link of links) {
             if(link.includes("https://files.redgifs.com")){
             const linkData = { link, category }; // Add category to the link data
@@ -86,27 +94,15 @@ async function addData(links, category) {
         await client.close();
     }
 }
-(async () => {
-    try {
-        await client.connect();
-        const database = client.db(dbname);
-        const collection = database.collection(collectionname);
-        await collection.createIndex({ link: 1 }, { unique: true });
-        console.log("Unique index created on the 'link' field.");
-    } catch (error) {
-        console.error("Error creating unique index:", error);
-    } finally {
-        await client.close();
-    }
-})();
-async function continuousScrapeImageLinks(query, order, divSelector, ws) {
+
+// Main scraping function
+async function scrapinguser(query, order, divSelector, ws) {
     let browser = await puppeteer.launch({ headless: true });
     let page = await browser.newPage();
     let scrapeCount = 0;
-
     try {
         await page.setViewport({ width: 1200, height: 800 });
-        const searchUrl = `https://www.redgifs.com/niches/${query}?order=${order}`;
+        const searchUrl = `https://www.redgifs.com/users/${query}?order=${order}`;
         console.log(`Searching for results from ${searchUrl}`);
         await page.goto(searchUrl, { waitUntil: 'networkidle2' });
 
@@ -122,18 +118,16 @@ async function continuousScrapeImageLinks(query, order, divSelector, ws) {
 
             if (newLinks.length > 0) {
                 if (ws && ws.readyState === WebSocket.OPEN) {
-                    const chunks = chunkArray(newLinks, 40);
+                    const chunks = chunkArray(newLinks, 400);
                     for (const chunk of chunks) {
                         ws.send(JSON.stringify({ links: chunk }));
                     }
                 } else {
-                    console.error("WebSocket is undefined or not ready.");
+                   console.error("WebSocket is undefined or not ready.");
                 }
-
                 // Add the links to MongoDB
                 await addData(newLinks);
             }
-
             // Restart browser every 100 scrapes to prevent memory issues
             scrapeCount++;
             if (scrapeCount >= 100) {
@@ -153,8 +147,9 @@ async function continuousScrapeImageLinks(query, order, divSelector, ws) {
         if (browser) await browser.close();
     }
 }
+
 // WebSocket server for live link updates
-const wss = new WebSocket.Server({ port: 8888 });
+const wss = new WebSocket.Server({ port: 8080 });
 let currentScraping = null; // Track the current scraping instance
 
 wss.on('connection', (ws) => {
@@ -167,13 +162,14 @@ wss.on('connection', (ws) => {
         if (currentScraping) {
             currentScraping.browser.close();
         }
+
         try {
             currentScraping = {
                 browser: await puppeteer.launch({ headless: true }),
             };
 
             const page = await currentScraping.browser.newPage();
-            await continuousScrapeImageLinks(query, order, divSelector, ws);
+            await scrapinguser(query, order, divSelector, ws);
         } catch (error) {
             console.error('Error during WebSocket scraping:', error.message);
         }
@@ -187,17 +183,35 @@ wss.on('connection', (ws) => {
         }
     });
 });
+
 // Define a route to notify the user that WebSocket is available
 app.get('/', (req, res) => {
-    res.send('WebSocket server running on ws://localhost:8888. Connect for live scraping updates.');
+    res.send('WebSocket server running on ws://localhost:8080. Connect for live scraping updates.');
 });
 
 // Start the express server
 app.listen(PORT, () => {
     console.log(`Express server is running on http://localhost:${PORT}`);
 });
- module.exports = {
-    continuousScrapeImageLinks,
-    setDBdetails
+
+// Create a unique index for MongoDB collection on startup
+(async () => {
+    try {
+        await client.connect();
+        const database = client.db(dbname);
+        const collection = database.collection(collectionName);
+        await collection.createIndex({ link: 1 }, { unique: true });
+        console.log("Unique index created on the 'link' field.");
+    } catch (error) {
+        console.error("Error creating unique index:", error);
+    } finally {
+        await client.close();
+    }
+})();
+
+
+module.exports = {
+    scrapinguser,
+    setDBdeta
    
 };
